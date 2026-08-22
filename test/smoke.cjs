@@ -116,13 +116,15 @@ async function hostTests() {
   const ctx = baseCtx();
   host.apply(ctx);
   if (settingsRegisterCount !== 0) throw new Error('unexpected');
-  const expectedPaths = ['/api/dsh-memory/items', '/api/dsh-memory/update', '/api/dsh-memory/remove', '/api/dsh-memory/link', '/api/dsh-memory/unlink', '/api/dsh-memory/graph', '/api/dsh-memory/consolidate', '/api/dsh-memory/extract', '/api/dsh-memory/status'];
+  const expectedPaths = ['/api/dsh-memory/items', '/api/dsh-memory/add', '/api/dsh-memory/update', '/api/dsh-memory/remove', '/api/dsh-memory/link', '/api/dsh-memory/unlink', '/api/dsh-memory/graph', '/api/dsh-memory/consolidate', '/api/dsh-memory/extract', '/api/dsh-memory/status'];
   for (const expected of expectedPaths) {
     if (!routes.some((r) => r.path === expected)) throw new Error('missing route: ' + expected);
   }
   if (!listeners.has('system-prompt/assemble')) throw new Error('assemble listener not registered');
   if (!listeners.has('session/event')) throw new Error('session/event listener not registered');
-  console.log('OK: host registers 9 routes + assemble/session listeners');
+  const seenPaths = routes.map((r) => r.path);
+  if (new Set(seenPaths).size !== seenPaths.length) throw new Error('duplicate route paths (webserver dedupes by path alone): ' + seenPaths.join(','));
+  console.log('OK: host registers 10 unique-path routes + assemble/session listeners');
 
   // injection listener --------------------------------------------------------
   const cwd = 'D:/Work/DemoProject';
@@ -273,7 +275,7 @@ async function hostTests() {
   };
 
   // manual add: created, then near-duplicate reinforces instead of duplicating
-  const addRoute = byPath('/api/dsh-memory/items', 'POST');
+  const addRoute = byPath('/api/dsh-memory/add');
   let r = await post(addRoute, { scope: 'project', sessionId: 'session-1', content: '接口统一返回 Result 包装结构', type: 'pattern', tags: ['api'] });
   if (r.status !== 200 || r.payload.created !== true) throw new Error('manual add failed: ' + JSON.stringify(r));
   const manualId = r.payload.item.id;

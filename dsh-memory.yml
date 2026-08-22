@@ -1,0 +1,7 @@
+# dsh-memory profile patch (activated via dsh.bundle once installed):
+# the client rides the additive `conversation.view` list seat (the view ring
+# that renders the Chat and Trajectory tabs), so nothing in the stock
+# composition is replaced or disabled.
+- insert:
+    - id: ui-memory
+      name: 'dsh-memory'

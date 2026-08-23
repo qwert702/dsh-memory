@@ -1,6 +1,6 @@
 {
     "name":  "dsh-memory",
-  "version": "0.2.0",
+  "version": "2.0.0",
     "description":  "Long-term memory for the DeepSeek Harness Web GUI: project-scoped and global memory stores, a Memory view tab beside Trajectory with one-item-per-row list and an Obsidian-style link graph, automatic per-turn memory extraction, automatic memory briefing injection into every request, and small-model periodic consolidation (dedupe / merge / link / archive).",
     "type":  "module",
     "main":  "lib/index.js",

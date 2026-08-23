@@ -127,7 +127,7 @@ async function hostTests() {
   const ctx = baseCtx();
   host.apply(ctx);
   if (settingsRegisterCount !== 0) throw new Error('unexpected');
-  const expectedPaths = ['/api/dsh-memory/items', '/api/dsh-memory/add', '/api/dsh-memory/update', '/api/dsh-memory/remove', '/api/dsh-memory/link', '/api/dsh-memory/unlink', '/api/dsh-memory/graph', '/api/dsh-memory/consolidate', '/api/dsh-memory/extract', '/api/dsh-memory/status', '/api/dsh-memory/undo', '/api/dsh-memory/export', '/api/dsh-memory/import', '/api/dsh-memory/distill'];
+  const expectedPaths = ['/api/dsh-memory/items', '/api/dsh-memory/add', '/api/dsh-memory/update', '/api/dsh-memory/remove', '/api/dsh-memory/link', '/api/dsh-memory/unlink', '/api/dsh-memory/graph', '/api/dsh-memory/consolidate', '/api/dsh-memory/extract', '/api/dsh-memory/status', '/api/dsh-memory/undo', '/api/dsh-memory/export', '/api/dsh-memory/import', '/api/dsh-memory/distill', '/api/dsh-memory/embed'];
   for (const expected of expectedPaths) {
     if (!routes.some((r) => r.path === expected)) throw new Error('missing route: ' + expected);
   }
@@ -515,6 +515,80 @@ async function hostTests() {
   if (emptyResult.kind !== 'error') throw new Error('/remember without input must error');
   console.log('OK: /remember stores manual memories in the session scope');
 
+  // embeddings: cosine, vector store round-trip, fusion, unavailable fallback ---
+  const emb = await import('file:///' + path.join(pkg, 'lib/embeddings.js').replace(/\\/g, '/'));
+  if (emb.cosine([1, 0], [1, 0]) !== 1 || emb.cosine([1, 0], [0, 1]) !== 0 || emb.cosine([], []) !== 0) throw new Error('cosine wrong');
+  const vecKey = 'p:vec-test';
+  const vstore = new emb.VectorStore();
+  await vstore.save(vecKey, new Map([['mem_v1', { v: Array(emb.EMBEDDING_DIM).fill(0.5), at: 42 }]]));
+  const loadedVecs = await vstore.load(vecKey);
+  const v1 = loadedVecs.get('mem_v1');
+  if (v1 === undefined || v1.at !== 42 || v1.v.length !== emb.EMBEDDING_DIM) throw new Error('vector store round-trip failed');
+
+  const qv = Array(emb.EMBEDDING_DIM).fill(0); qv[0] = 1;
+  const matchVec = Array(emb.EMBEDDING_DIM).fill(0); matchVec[0] = 1;
+  const otherVec = Array(emb.EMBEDDING_DIM).fill(0); otherVec[1] = 1;
+  const semBriefing = T.selectBriefing(
+    [mk('g-sem', 'global', '换一种说法表达的偏好', { createdAt: Date.now(), updatedAt: Date.now() })],
+    [mk('p-lex', 'project', '完全不同的部署流程话题内容', { createdAt: Date.now(), updatedAt: Date.now(), useCount: 5 })],
+    2, 10000,
+    new Set(['部署']), qv, new Map([['g-sem', matchVec], ['p-lex', otherVec]]),
+  );
+  if (!semBriefing.text.includes('换一种说法')) throw new Error('semantic fusion should lift the vector-matching memory over higher-use lexical noise');
+  const noSem = T.selectBriefing(
+    [mk('g-old2', 'global', '旧但常用的一条', { useCount: 50 })],
+    [mk('p-new2', 'project', '新而无用的一条', {})],
+    1, 10000, undefined, [1, 0], new Map([['p-new2', [0, 1]]]),
+  );
+  if (!noSem.ids.includes('g-old2')) throw new Error('without query tokens the semantic signal must not apply');
+  console.log('OK: embeddings cosine + vector store + fused briefing ranking');
+
+  const mgr = new emb.EmbedderManager();
+  if (mgr.state !== 'idle') throw new Error('embedder must start idle');
+  const probe = await mgr.embedBatch(['semantic recall probe']);
+  if (probe === undefined) {
+    // Optional lib absent or model unreachable: must land in a non-ready
+    // terminal-ish state so callers know to fall back to lexical scoring.
+    if (mgr.state === 'ready' || mgr.state === 'loading' || mgr.state === 'idle') throw new Error('failed embedBatch left inconsistent state: ' + mgr.state);
+    console.log('OK: embedder fails soft when unavailable (state=' + mgr.state + ')');
+  } else {
+    if (mgr.state !== 'ready') throw new Error('successful batch must mark ready, got ' + mgr.state);
+    if (!Array.isArray(probe[0]) || probe[0].length !== emb.EMBEDDING_DIM) throw new Error('probe vector wrong shape');
+    const norm = Math.sqrt(probe[0].reduce((acc, x) => acc + x * x, 0));
+    if (Math.abs(norm - 1) > 0.01) throw new Error('embedding not L2-normalized: ' + norm);
+    console.log('OK: embedder serves real embeddings (L2-normalized, ' + emb.EMBEDDING_DIM + ' dims)');
+  }
+
+  // auto-link during consolidation ------------------------------------------------
+  {
+    const rnd = () => Math.random().toString(36).slice(2, 8);
+    const linkConfigRuntime = T.createRuntime(extractionCtx, () => ({
+      enabled: true, injectEnabled: true, autoExtract: true,
+      extractProvider: '', extractModel: '',
+      consolidateEveryTurns: 0, topK: 8, maxInjectChars: 1500, maxInputChars: 12000, maxTokens: 1024,
+      autoArchiveDays: 0, memoryLocale: '',
+      embeddingsEnabled: false, embeddingRemoteHost: '', autoLinkThreshold: 0.5,
+    }));
+    const a1 = await runtime.store.applyCandidate(pKey, { content: '自动建链配对甲' + rnd(), type: 'fact', tags: [], origin: 'manual', cwd }, 'add', null);
+    const b1 = await runtime.store.applyCandidate(pKey, { content: '自动建链配对乙' + rnd(), type: 'fact', tags: [], origin: 'manual', cwd }, 'add', null);
+    const fakeVec = Array.from({ length: emb.EMBEDDING_DIM }, (_, i) => (i % 7 === 0 ? 0.3 : 0.01));
+    await runtime.vectors.save(pKey, new Map([
+      [a1.item.id, { v: fakeVec, at: a1.item.updatedAt }],
+      [b1.item.id, { v: fakeVec.slice(), at: b1.item.updatedAt }],
+    ]));
+    replyIndex = 0;
+    extractionCtx.llm = { stream: async function* () { yield { type: 'finish', reason: { kind: 'stop' } } } };
+    const linkRun = await T.consolidateScope(linkConfigRuntime, pKey, undefined);
+    if ((linkRun.linkedAuto ?? 0) < 1) throw new Error('auto-link did not run: ' + JSON.stringify(linkRun));
+    const postLink = readMemoryFile(path.join('projects', pKey.slice(2) + '.json'));
+    const aItem = postLink.items.find((i) => i.id === a1.item.id);
+    if (!aItem.links.some((e) => e.id === b1.item.id && e.kind === 'related')) throw new Error('auto-link edge missing on A');
+    const bItem = postLink.items.find((i) => i.id === b1.item.id);
+    if (!bItem.links.some((e) => e.id === a1.item.id && e.kind === 'related')) throw new Error('auto-link edge missing on B');
+    console.log('OK: consolidation auto-links similar pairs both ways (model-independent)');
+  }
+
+
   // regression: supersede must not double-edge the new item -----------------------
   {
     const currentProject = readMemoryFile(path.join('projects', pKey.slice(2) + '.json'));
@@ -569,7 +643,7 @@ async function clientTests() {
   }
   if (loader.id !== 'dsh-memory') throw new Error('wrong bundle id: ' + loader.id);
   const client = loader.exports;
-  if (client.inject.length !== 2 || client.inject[0] !== 'slots' || client.inject[1] !== 'locale') {
+  if (client.inject.length !== 3 || client.inject[0] !== 'slots' || client.inject[1] !== 'locale' || client.inject[2] !== 'sessions') {
     throw new Error('wrong client inject: ' + JSON.stringify(client.inject));
   }
   console.log('OK: client bundle loads, inject slots+locale');

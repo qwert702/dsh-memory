@@ -1,33 +1,33 @@
 {
-  "name": "dsh-memory",
-  "version": "0.1.0",
-  "description": "Long-term memory for the DeepSeek Harness Web GUI: project-scoped and global memory stores, a Memory view tab beside Trajectory with one-item-per-row list and an Obsidian-style link graph, automatic per-turn memory extraction, automatic memory briefing injection into every request, and small-model periodic consolidation (dedupe / merge / link / archive).",
-  "type": "module",
-  "main": "lib/index.js",
-  "exports": {
-    ".": {
-      "default": "./lib/index.js"
-    },
-    "./client": {
-      "default": "./lib/client.js"
-    },
-    "./package.json": "./package.json"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "dsh-memory.yml"
-    },
-    "client": {
-      "platform": "web",
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-conversation"
-      ]
-    }
-  },
-  "scripts": {
-    "test": "node test/smoke.cjs"
-  },
-  "license": "MIT"
+    "name":  "dsh-memory",
+  "version": "0.2.0",
+    "description":  "Long-term memory for the DeepSeek Harness Web GUI: project-scoped and global memory stores, a Memory view tab beside Trajectory with one-item-per-row list and an Obsidian-style link graph, automatic per-turn memory extraction, automatic memory briefing injection into every request, and small-model periodic consolidation (dedupe / merge / link / archive).",
+    "type":  "module",
+    "main":  "lib/index.js",
+    "exports":  {
+                    ".":  {
+                              "default":  "./lib/index.js"
+                          },
+                    "./client":  {
+                                     "default":  "./lib/client.js"
+                                 },
+                    "./package.json":  "./package.json"
+                },
+    "dsh":  {
+                "bundle":  {
+                               "patch":  "dsh-memory.yml"
+                           },
+                "client":  {
+                               "platform":  "web",
+                               "inject":  [
+                                              "@deepseek-ai/dsh-client-runtime",
+                                              "@deepseek-ai/dsh-client-locale",
+                                              "@deepseek-ai/dsh-client-ui-conversation"
+                                          ]
+                           }
+            },
+    "scripts":  {
+                    "test":  "node test/smoke.cjs"
+                },
+    "license":  "MIT"
 }

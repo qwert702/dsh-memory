@@ -9,6 +9,10 @@ DeepSeek Harness 网页端**长期记忆插件**：项目记忆 + 全局记忆�
 > 例如本地路径：`dsh plugin --profile web add "D:\CBN-HT\Desktop\AI编程\dsh插件\dsh-memory(记忆插件）"`
 > 装完重启 harness（`dsh web`）、刷新页面，会话头部「对话 / 轨迹」旁边会出现「**记忆**」标签页。
 
+- **本地语义召回（可选增强）** —— 安装可选依赖后自动启用 `all-MiniLM-L6-v2` 本地嵌入（transformers.js 纯 WASM，无原生编译）：提取/新增的记忆自动向量化存入 sidecar，注入时按"语义相似度 × 词面重合 × 重要性"融合排序——**换说法也能召回**。未安装依赖或模型下载失败时自动回退纯关键词检索，状态在 Tab 状态栏可见。国内网络可用 `embeddingRemoteHost` 配置 hf-mirror 镜像。
+- **整理时自动建链** —— 每次整理对余弦相似度 ≥ `autoLinkThreshold`（默认 0.78）且尚无关联的活跃记忆对自动补 related 双向边（单次上限 30 条），图谱随使用自然生长。
+- **记忆详情与溯源** —— 列表中点击任意记忆展开详情卡：完整内容、类型/标签、创建与更新时间、强化次数；关联记忆可点击跳转；**「打开来源会话」一键跳回当初产生这条记忆的对话**。
+
 ## 功能
 
 - **双作用域记忆库**：
@@ -54,9 +58,14 @@ dsh-memory:
   maxTokens: 1024               # 辅助调用输出预算
   autoArchiveDays: 90           # 过期自动归档天数（0 = 关闭）
   memoryLocale: ''              # 记忆语言：空=跟随对话，或强制 zh/en
+  embeddingsEnabled: true       # 本地语义嵌入开关（需可选依赖，见下）
+  embeddingRemoteHost: ''       # HuggingFace 镜像（国内推荐 https://hf-mirror.com）
+  autoLinkThreshold: 0.78       # 整理时自动建链的余弦阈值（0 = 关闭）
 ```
 
 **模型分工**：`extract*` 管高频的自动提取与「记住这条」提炼；`manage*` 管低频的记忆整理/归档。`manage*` 留空时回落到 `extract*`，再留空则跟随会话模型。典型用法：提取用便宜快的小模型，整理用更强的模型。
+
+**启用语义召回（可选）**：在 harness 安装目录执行一次 `npm i @huggingface/transformers`，重启后首次使用自动下载 ~23MB 量化模型（国内可配 `embeddingRemoteHost: 'https://hf-mirror.com'` 加速）。不安装不影响其余功能——自动回退关键词检索。
 
 以上设置也可在 harness 网页设置界面中直接修改（设置面板按 schema 自动生成，模型字段带说明文字）。
 

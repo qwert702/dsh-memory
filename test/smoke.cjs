@@ -447,6 +447,17 @@ async function hostTests() {
     const tr = T.buildTranscript(mkMachineSession('x'), 0, 50000);
     if (tr.text.includes('指挥官派发')) throw new Error('transcript must drop plugin-injected user lines: ' + JSON.stringify(tr.text));
     if (!tr.text.includes('收到任务')) throw new Error('assistant side must stay in transcript');
+    // Regression: the filter must read source off the RAW event payload even
+    // when deriveEventMessage strips it from the derived message.
+    const strippedDerive = mkMachineSession('y');
+    strippedDerive.deriveEventMessage = (event) => {
+      const msg = event.data?.message;
+      if (msg === undefined) return null;
+      const { source, ...rest } = msg; // strip source like a lossy derive may
+      return rest;
+    };
+    const tr2 = T.buildTranscript(strippedDerive, 0, 50000);
+    if (tr2.text.includes('指挥官派发')) throw new Error('filter must survive lossy derive (raw-event source)');
   }
   let machineLlmCalled = false;
   extractionCtx.llm = { stream: async function* () { machineLlmCalled = true; yield { type: 'finish', reason: { kind: 'stop' } } } };

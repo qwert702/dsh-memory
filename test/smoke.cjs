@@ -98,7 +98,13 @@ async function hostTests() {
   if (T.resolveRoute({ extractProvider: 'p1', extractModel: 'm1' }, { config: { provider: 'ph', model: 'mh' } }).model !== 'm1') throw new Error('route override should win');
   if (T.resolveRoute({ extractProvider: '', extractModel: '' }, { config: { provider: 'ph', model: 'mh' } }).model !== 'mh') throw new Error('route header fallback');
   if (T.resolveRoute({ extractProvider: '', extractModel: '' }, undefined) !== undefined) throw new Error('route absent case');
-  console.log('OK: resolveRoute precedence');
+
+  // manage route precedence: dedicated pair > extraction pair > session header
+  if (T.resolveManageRoute({ manageProvider: 'mp', manageModel: 'mm', extractProvider: 'ep', extractModel: 'em' }, { config: { provider: 'ph', model: 'mh' } }).model !== 'mm') throw new Error('manage pair must win');
+  if (T.resolveManageRoute({ manageProvider: '', manageModel: '', extractProvider: 'ep', extractModel: 'em' }, { config: { provider: 'ph', model: 'mh' } }).model !== 'em') throw new Error('empty manage pair must fall back to extraction pair');
+  if (T.resolveManageRoute({ manageProvider: '', manageModel: '', extractProvider: '', extractModel: '' }, { config: { provider: 'ph', model: 'mh' } }).model !== 'mh') throw new Error('manage route must fall back to session header');
+  if (T.resolveManageRoute({ manageProvider: '', manageModel: '', extractProvider: '', extractModel: '' }, undefined) !== undefined) throw new Error('manage route absent case');
+  console.log('OK: resolveRoute + resolveManageRoute precedence');
 
   // apply(): registrations ----------------------------------------------------
   const listeners = new Map();

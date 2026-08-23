@@ -43,8 +43,10 @@ dsh-memory:
   enabled: true                 # 总开关
   injectEnabled: true           # 自动注入开关
   autoExtract: true             # 自动提取开关
-  extractProvider: ''           # 小模型路由（成对填写）
+  extractProvider: ''           # 提取模型路由（成对填写；留空跟随会话模型）
   extractModel: ''
+  manageProvider: ''            # 管理/整理专用模型（成对填写；留空则用提取模型）
+  manageModel: ''
   consolidateEveryTurns: 20     # 自动整理的提取轮次阈值（0 = 关闭自动整理）
   topK: 8                       # 注入条数上限
   maxInjectChars: 1500          # 注入总字符帽
@@ -54,7 +56,9 @@ dsh-memory:
   memoryLocale: ''              # 记忆语言：空=跟随对话，或强制 zh/en
 ```
 
-以上设置也可在 harness 网页设置界面中直接修改（设置面板自动生成）。
+**模型分工**：`extract*` 管高频的自动提取与「记住这条」提炼；`manage*` 管低频的记忆整理/归档。`manage*` 留空时回落到 `extract*`，再留空则跟随会话模型。典型用法：提取用便宜快的小模型，整理用更强的模型。
+
+以上设置也可在 harness 网页设置界面中直接修改（设置面板按 schema 自动生成，模型字段带说明文字）。
 
 ## 工作原理
 

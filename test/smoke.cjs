@@ -525,6 +525,9 @@ async function hostTests() {
     scopedCtx.llm = { stream: async function* () { yield { type: 'text-delta', index: 0, text: '{"ops":[]}' }; yield { type: 'finish', reason: { kind: 'stop' } } } };
     r = await post(consolidateRoute, { scope: 'global' });
     if (r.status !== 200 || typeof r.payload.applied !== 'number') throw new Error('consolidate route applied must be a flat number: ' + JSON.stringify(r.payload));
+    // An unresolvable project scope must 400, never silently fall back to global.
+    r = await post(consolidateRoute, { scope: 'project', sessionId: 'ghost-session' });
+    if (r.status !== 400 || r.payload.error.code !== 'no-workspace') throw new Error('unresolvable project consolidation must 400 no-workspace: ' + JSON.stringify(r.payload));
   }
 
   // regression: import mints ids for entries without a valid one ------------------

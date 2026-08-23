@@ -508,6 +508,30 @@ async function hostTests() {
   const emptyResult = await rememberCmd.handler({ rawInput: '   ', agent: undefined });
   if (emptyResult.kind !== 'error') throw new Error('/remember without input must error');
   console.log('OK: /remember stores manual memories in the session scope');
+
+  // regression: supersede must not double-edge the new item -----------------------
+  {
+    const currentProject = readMemoryFile(path.join('projects', pKey.slice(2) + '.json'));
+    const supNew = currentProject.items.find((i) => i.id === sup.item.id);
+    if (supNew === undefined) throw new Error('superseded-new item vanished');
+    const edgesToTarget = supNew.links.filter((e) => e.id === dbItem.id);
+    if (edgesToTarget.length !== 1 || edgesToTarget[0].kind !== 'supersedes') throw new Error('supersede created duplicate/wrong edges: ' + JSON.stringify(supNew.links));
+  }
+
+  // regression: consolidate route responds with a FLAT applied number -------------
+  {
+    const consolidateRoute = byPath('/api/dsh-memory/consolidate', 'POST');
+    replyIndex = 0;
+    scopedCtx.llm = { stream: async function* () { yield { type: 'text-delta', index: 0, text: '{"ops":[]}' }; yield { type: 'finish', reason: { kind: 'stop' } } } };
+    r = await post(consolidateRoute, { scope: 'global' });
+    if (r.status !== 200 || typeof r.payload.applied !== 'number') throw new Error('consolidate route applied must be a flat number: ' + JSON.stringify(r.payload));
+  }
+
+  // regression: import mints ids for entries without a valid one ------------------
+  r = await post(importRoute, { scope: 'global', mode: 'merge', items: [{ content: '无 id 的导入条目应有新 id', type: 'fact', tags: [] }] });
+  if (r.status !== 200 || r.payload.imported !== 1) throw new Error('import without id failed: ' + JSON.stringify(r.payload));
+  const importedNoId = readMemoryFile('global.json').items.find((i) => i.content === '无 id 的导入条目应有新 id');
+  if (importedNoId === undefined || typeof importedNoId.id !== 'string' || !importedNoId.id.startsWith('mem_')) throw new Error('imported item lacks a minted id');
 }
 
 // --- 3. client bundle tests ---

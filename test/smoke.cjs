@@ -133,6 +133,10 @@ async function hostTests() {
   }
   if (!listeners.has('system-prompt/assemble')) throw new Error('assemble listener not registered');
   if (!listeners.has('session/event')) throw new Error('session/event listener not registered');
+  // Capture the first-runtime handlers now: later applies (scoped ctx) would
+  // overwrite the shared listeners map.
+  const assemble = listeners.get('system-prompt/assemble');
+  const sessionEventListener = listeners.get('session/event');
   const seenPaths = routes.map((r) => r.path);
   if (new Set(seenPaths).size !== seenPaths.length) throw new Error('duplicate route paths (webserver dedupes by path alone): ' + seenPaths.join(','));
   if (registeredCommands.length !== 1 || registeredCommands[0].name !== 'remember') throw new Error('/remember command not registered: ' + JSON.stringify(registeredCommands.map((c) => c.name)));
@@ -146,7 +150,6 @@ async function hostTests() {
   fs.writeFileSync(path.join(memoryDir, 'global.json'), JSON.stringify({ version: 1, kind: 'global', items: [mk('g1', 'global', '用户偏好中文回复')] }));
   fs.writeFileSync(path.join(memoryDir, 'projects', pKey.slice(2) + '.json'), JSON.stringify({ version: 1, kind: 'project', cwd, items: [mk('p1', 'project', '本项目用 TypeScript')] }));
 
-  const assemble = listeners.get('system-prompt/assemble');
   const makeAssembly = () => ({ sections: [], contexts: [], tools: [], variables: {} });
   const injectedAssembly = await assemble(makeAssembly(), { agent: { session: { header: { cwd } } } }, async () => makeAssembly());
   const memContexts = injectedAssembly.contexts.filter((entry) => entry.name === 'dsh-memory');
@@ -425,6 +428,75 @@ async function hostTests() {
   const subResult = await T.extractSession(runtime, 'sub-1', true);
   if (subResult.added !== 0 || subLlmCalled) throw new Error('subagent session must be skipped before any model call');
   console.log('OK: subagent sessions never reach the extractor');
+
+  // machine-driven sessions (commander workers) ---------------------------------------
+  // All user turns plugin-sourced => session classified machine => auto
+  // extraction skipped; transcript builder drops plugin-injected user lines.
+  const mkMachineSession = (id) => ({
+    id,
+    header: { cwd },
+    events: [
+      { type: 'user/message', seq: 1, time: 1, data: { message: { role: 'user', content: '【指挥官派发】实现登录页', source: { kind: 'plugin', plugin: 'dsh-commander' } } } },
+      { type: 'assistant/message', seq: 2, time: 2, data: { message: { role: 'assistant', content: [{ type: 'text', text: '收到任务，开始实现。' }] } } },
+      { type: 'turn/end', seq: 3, time: 3, data: {} },
+    ],
+    deriveEventMessage: (event) => event.data?.message ?? null,
+    requestHeader: () => ({ config: { provider: 'asdf', model: 'qwen38' } }),
+  });
+  {
+    const tr = T.buildTranscript(mkMachineSession('x'), 0, 50000);
+    if (tr.text.includes('指挥官派发')) throw new Error('transcript must drop plugin-injected user lines: ' + JSON.stringify(tr.text));
+    if (!tr.text.includes('收到任务')) throw new Error('assistant side must stay in transcript');
+  }
+  let machineLlmCalled = false;
+  extractionCtx.llm = { stream: async function* () { machineLlmCalled = true; yield { type: 'finish', reason: { kind: 'stop' } } } };
+  extractionCtx.sessions.get = (id) => (id === 'worker-9' ? mkMachineSession('worker-9') : undefined);
+  runtime.sessionKinds.set('worker-9', 'machine');
+  const beforeCount = readMemoryFile(path.join('projects', pKey.slice(2) + '.json')).items.length;
+  const machResult = await T.extractSession(runtime, 'worker-9', false);
+  if (machResult.added !== 0 || machineLlmCalled) throw new Error('machine-driven session must be auto-skipped');
+  const afterCount = readMemoryFile(path.join('projects', pKey.slice(2) + '.json')).items.length;
+  if (afterCount !== beforeCount) throw new Error('machine skip must not touch the store');
+
+  // a human message flips the session back to human-driven
+  const humanFlip = mkMachineSession('worker-10');
+  humanFlip.events[0] = { type: 'user/message', seq: 1, time: 1, data: { message: { role: 'user', content: '我自己接手这个任务，先改样式', source: undefined } } };
+  extractionCtx.sessions.get = (id) => (id === 'worker-10' ? humanFlip : undefined);
+  runtime.sessionKinds.delete('worker-10');
+  // classify like the live listener would
+  {
+    const ev = humanFlip.events[0];
+    const src = ev.data?.message?.source;
+    if (!(src?.kind === 'plugin')) runtime.sessionKinds.set('worker-10', 'human');
+  }
+  replyIndex = 0;
+  extractionCtx.llm = {
+    stream: async function* () {
+      yield { type: 'text-delta', index: 0, text: '[{"content":"用户亲自接手并要求先改样式","type":"decision","tags":[],"action":"add","targetId":null}]' };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    },
+  };
+  const flipResult = await T.extractSession(runtime, 'worker-10', false);
+  if (flipResult.added !== 1) throw new Error('human takeover must resume extraction: ' + JSON.stringify(flipResult));
+  console.log('OK: machine-driven sessions skipped for extraction+transcript; human takeover resumes');
+
+  // injection isolation: machine session receives NO memory briefing ------------------
+  // Driven through the real session/event listener so the classification
+  // table that assemble reads is the one being exercised.
+  const sessionListener = sessionEventListener;
+  sessionListener(
+    { id: 'worker-inject', deriveEventMessage: () => null },
+    { type: 'user/message', data: { message: { role: 'user', content: '【指挥官派发】任务简报', source: { kind: 'plugin', plugin: 'dsh-commander' } } } },
+  );
+  const machineAssembly = await assemble(makeAssembly(), { agent: { session: { id: 'worker-inject', header: { cwd } } } }, async () => makeAssembly());
+  if (machineAssembly.contexts.some((entry) => entry.name === 'dsh-memory')) throw new Error('machine session must not receive briefings');
+  sessionListener(
+    { id: 'human-inject', deriveEventMessage: () => ({ role: 'user', content: '我自己在干活' }) },
+    { type: 'user/message', data: { message: { role: 'user', content: '我自己在干活' } } },
+  );
+  const humanAssembly2 = await assemble(makeAssembly(), { agent: { session: { id: 'human-inject', header: { cwd } } } }, async () => makeAssembly());
+  if (!humanAssembly2.contexts.some((entry) => entry.name === 'dsh-memory')) throw new Error('human session should still receive briefings');
+  console.log('OK: briefing injection isolated from machine-driven sessions');
 
   // auto-archive heuristic (no model route needed when only synthetic ops exist) -----
   const archiveConfigRuntime = T.createRuntime(extractionCtx, () => ({

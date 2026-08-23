@@ -103,10 +103,15 @@ async function hostTests() {
   // apply(): registrations ----------------------------------------------------
   const listeners = new Map();
   const routes = [];
+  const registeredCommands = [];
   let settingsRegisterCount = 0;
   const effectsRun = [];
   const baseCtx = () => ({
-    inject(services, cb) { cb({ settings: { register: () => ({ get: () => ({}) }) } }); },
+    config: {},
+    inject(services, cb) {
+      if (services.includes('settings')) cb({ settings: { register: () => ({ get: () => ({}) }) } });
+      if (services.includes('commands')) cb({ commands: { register: (def) => registeredCommands.push(def) } });
+    },
     effect(fn, label) { effectsRun.push(label ?? ''); fn(); },
     on(event, handler) { listeners.set(event, handler); },
     webServer: { register(route) { routes.push(route); return () => {}; } },
@@ -116,7 +121,7 @@ async function hostTests() {
   const ctx = baseCtx();
   host.apply(ctx);
   if (settingsRegisterCount !== 0) throw new Error('unexpected');
-  const expectedPaths = ['/api/dsh-memory/items', '/api/dsh-memory/add', '/api/dsh-memory/update', '/api/dsh-memory/remove', '/api/dsh-memory/link', '/api/dsh-memory/unlink', '/api/dsh-memory/graph', '/api/dsh-memory/consolidate', '/api/dsh-memory/extract', '/api/dsh-memory/status'];
+  const expectedPaths = ['/api/dsh-memory/items', '/api/dsh-memory/add', '/api/dsh-memory/update', '/api/dsh-memory/remove', '/api/dsh-memory/link', '/api/dsh-memory/unlink', '/api/dsh-memory/graph', '/api/dsh-memory/consolidate', '/api/dsh-memory/extract', '/api/dsh-memory/status', '/api/dsh-memory/undo', '/api/dsh-memory/export', '/api/dsh-memory/import', '/api/dsh-memory/distill'];
   for (const expected of expectedPaths) {
     if (!routes.some((r) => r.path === expected)) throw new Error('missing route: ' + expected);
   }
@@ -124,7 +129,8 @@ async function hostTests() {
   if (!listeners.has('session/event')) throw new Error('session/event listener not registered');
   const seenPaths = routes.map((r) => r.path);
   if (new Set(seenPaths).size !== seenPaths.length) throw new Error('duplicate route paths (webserver dedupes by path alone): ' + seenPaths.join(','));
-  console.log('OK: host registers 10 unique-path routes + assemble/session listeners');
+  if (registeredCommands.length !== 1 || registeredCommands[0].name !== 'remember') throw new Error('/remember command not registered: ' + JSON.stringify(registeredCommands.map((c) => c.name)));
+  console.log('OK: host registers 14 unique-path routes + /remember command + listeners');
 
   // injection listener --------------------------------------------------------
   const cwd = 'D:/Work/DemoProject';
@@ -200,7 +206,7 @@ async function hostTests() {
   replyIndex = 0;
   const themeItem = projectStore.items.find((item) => item.content.includes('深色主题'));
   // The consolidation guard skips scopes with fewer than 4 active memories.
-  await runtime.store.addOrReinforce(pKey, { content: '部署前必须跑通全部单元测试', type: 'pattern', tags: ['流程'], origin: 'manual', cwd });
+  await runtime.store.applyCandidate(pKey, { content: '部署前必须跑通全部单元测试', type: 'pattern', tags: ['流程'], origin: 'manual', cwd }, 'add', null)
   extractionCtx.llm = {
     stream: async function* () {
       yield { type: 'text-delta', index: 0, text: '{"ops":[{"op":"merge","into":"' + pnpmItem.id + '","from":["' + themeItem.id + '"],"content":"用户偏好深色主题且团队统一使用 pnpm"},{"op":"archive","id":"missing-id"}]}' };
@@ -208,7 +214,7 @@ async function hostTests() {
     },
   };
   const consolidated = await T.consolidateScope(runtime, pKey, 'session-1');
-  if (consolidated !== 1) throw new Error('consolidation should apply exactly 1 valid op: ' + consolidated);
+  if (consolidated.applied !== 1 || consolidated.archivedStale !== 0) throw new Error('consolidation should apply exactly 1 valid op: ' + JSON.stringify(consolidated));
   projectStore = readMemoryFile(path.join('projects', pKey.slice(2) + '.json'));
   const activeItems = projectStore.items.filter((item) => item.status === 'active');
   const archivedItems = projectStore.items.filter((item) => item.status === 'archived');
@@ -236,7 +242,18 @@ async function hostTests() {
   const scopedRoutes = [];
   const scopedCtx = baseCtx();
   scopedCtx.webServer = { register(route) { scopedRoutes.push(route); return () => {}; } };
-  scopedCtx.sessions.get = (id) => (id === 'session-1' ? { id, header: { cwd } } : undefined);
+  const sessionDFixture = {
+    id: 'session-d',
+    header: { cwd },
+    events: [{ type: 'assistant/message', seq: 1, time: 1, data: { message: { id: 'msg-77', role: 'assistant', content: [{ type: 'text', text: '一段很值得记住的长回复。' }] } } }],
+    deriveEventMessage: (event) => event.data?.message ?? null,
+    requestHeader: () => ({ config: { provider: 'asdf', model: 'qwen38' } }),
+  };
+  scopedCtx.sessions.get = (id) => {
+    if (id === 'session-1') return { id, header: { cwd } };
+    if (id === 'session-d') return sessionDFixture;
+    return undefined;
+  };
   host.apply(scopedCtx);
   const itemsRoute = scopedRoutes.filter((r) => r.path === '/api/dsh-memory/items')[0];
   const fakeRes = () => {
@@ -343,6 +360,154 @@ async function hostTests() {
   r = await post(extractRoute, { sessionId: 'unknown-session' });
   if (r.status !== 200 || r.payload.added !== 0) throw new Error('extract of unknown session should no-op 200');
   console.log('OK: extract route validates input, no-ops unknown sessions');
+
+  // relevance + pinned briefing -------------------------------------------------
+  const qTokens = T.tokenize('这个项目的部署流程是什么 pnpm');
+  if (qTokens.size === 0) throw new Error('tokenize produced nothing for CJK+latin mix');
+  const relBriefing = T.selectBriefing(
+    [mk('g-old', 'global', '完全无关的旧全局偏好', { createdAt: 1, updatedAt: 1, useCount: 50 })],
+    [
+      mk('p-rel', 'project', '本项目的部署流程是先跑测试再构建', { createdAt: Date.now(), updatedAt: Date.now() }),
+      mk('p-other', 'project', '无关话题：界面主题颜色配置', { createdAt: Date.now(), updatedAt: Date.now(), useCount: 9 }),
+    ],
+    2, 10000, qTokens,
+  );
+  if (!relBriefing.text.includes('部署流程')) throw new Error('relevance should surface the matching memory: ' + relBriefing.text);
+  const pinBriefing = T.selectBriefing(
+    [mk('g-pin', 'global', '被置顶的核心身份信息', { pinned: true, createdAt: 1, updatedAt: 1 })],
+    [], 1, 10000, undefined,
+  );
+  if (!pinBriefing.ids.includes('g-pin')) throw new Error('pinned memory must be carried even with topK=1 competition');
+  console.log('OK: selectBriefing honors relevance tokens and pinned carry');
+
+  // candidate action protocol -----------------------------------------------------
+  const badAction = T.parseCandidates('[{"content":"x","action":"update"}]');
+  if (badAction.length !== 1 || badAction[0].action !== 'add') throw new Error('update without targetId must coerce to add');
+  const goodAction = T.parseCandidates('[{"content":"y","action":"supersede","targetId":"mem_abc"}]');
+  if (goodAction[0].action !== 'supersede' || goodAction[0].targetId !== 'mem_abc') throw new Error('valid action/targetId lost');
+  console.log('OK: parseCandidates validates the action protocol');
+
+  // applyCandidate actions against the live store ----------------------------------
+  await runtime.store.applyCandidate(pKey, { content: '数据库用 PostgreSQL 16', type: 'decision', tags: ['db'], origin: 'manual', cwd }, 'add', null);
+  const dbItem = (await runtime.store.list(pKey)).find((item) => item.content.includes('PostgreSQL'));
+  const upd = await runtime.store.applyCandidate(pKey, { content: '数据库已升级到 PostgreSQL 17', type: 'decision', tags: ['db'], origin: 'auto', cwd }, 'update', dbItem.id);
+  if (upd.relation !== 'updated' || upd.item.content !== '数据库已升级到 PostgreSQL 17') throw new Error('update action wrong: ' + JSON.stringify(upd));
+  const sup = await runtime.store.applyCandidate(pKey, { content: '团队决定改用 MySQL 8', type: 'decision', tags: ['db'], origin: 'auto', cwd }, 'supersede', dbItem.id);
+  if (sup.relation !== 'superseded' || !sup.created) throw new Error('supersede action wrong: ' + JSON.stringify(sup));
+  const afterSup = await runtime.store.list(pKey);
+  const supTarget = afterSup.find((i) => i.id === dbItem.id);
+  if (supTarget.status !== 'archived' || !supTarget.links.some((e) => e.kind === 'supersedes')) throw new Error('supersede must archive target with a supersedes link');
+  const con = await runtime.store.applyCandidate(pKey, { content: '离线环境仍使用 PostgreSQL 16', type: 'decision', tags: ['db'], origin: 'auto', cwd }, 'contradict', sup.item.id);
+  if (con.relation !== 'contradicted') throw new Error('contradict action wrong');
+  const afterCon = await runtime.store.list(pKey);
+  const conSource = afterCon.find((i) => i.id === sup.item.id);
+  if (!conSource.links.some((e) => e.id === con.item.id && e.kind === 'contradicts')) throw new Error('contradicts link missing on the source side');
+  console.log('OK: applyCandidate applies update/supersede/contradict relations');
+
+  // subagent extraction filter ------------------------------------------------------
+  let subLlmCalled = false;
+  extractionCtx.llm = { stream: async function* () { subLlmCalled = true; yield { type: 'finish', reason: { kind: 'stop' } }; } };
+  extractionCtx.sessions.get = (id) => (id === 'sub-1'
+    ? {
+        id: 'sub-1',
+        header: { cwd, origin: 'subagent' },
+        events: [{ type: 'user/message', seq: 1, time: 1, data: {} }, { type: 'turn/end', seq: 2, time: 2, data: {} }],
+        deriveEventMessage: () => ({ role: 'user', content: '子代理内部对话' }),
+        requestHeader: () => ({ config: { provider: 'a', model: 'b' } }),
+      }
+    : undefined);
+  const subResult = await T.extractSession(runtime, 'sub-1', true);
+  if (subResult.added !== 0 || subLlmCalled) throw new Error('subagent session must be skipped before any model call');
+  console.log('OK: subagent sessions never reach the extractor');
+
+  // auto-archive heuristic (no model route needed when only synthetic ops exist) -----
+  const archiveConfigRuntime = T.createRuntime(extractionCtx, () => ({
+    enabled: true, injectEnabled: true, autoExtract: true,
+    extractProvider: '', extractModel: '',
+    consolidateEveryTurns: 0, topK: 8, maxInjectChars: 1500, maxInputChars: 12000, maxTokens: 1024,
+    autoArchiveDays: 90, memoryLocale: '',
+  }));
+  const staleContent = '远古时期的一次性记录，早该归档了';
+  await runtime.store.applyCandidate(pKey, { content: staleContent, type: 'fact', tags: [], origin: 'auto', cwd }, 'add', null);
+  {
+    const file = path.join(process.env.DSH_HOME, 'memory', 'projects', pKey.slice(2) + '.json');
+    const storeFile = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const stale = storeFile.items.find((i) => i.content === staleContent);
+    stale.createdAt = Date.now() - 200 * 86_400_000;
+    stale.updatedAt = stale.createdAt;
+    fs.writeFileSync(file, JSON.stringify(storeFile));
+  }
+  const archiveRun = await T.consolidateScope(archiveConfigRuntime, pKey, undefined);
+  if (archiveRun.applied < 1 || archiveRun.archivedStale !== 1) throw new Error('stale auto-archive did not run: ' + JSON.stringify(archiveRun));
+  const postArchive = await runtime.store.list(pKey);
+  if (postArchive.find((i) => i.content === staleContent)?.status !== 'archived') throw new Error('stale item not archived');
+  console.log('OK: stale memories are auto-archived heuristically (model-independent)');
+
+  // undo -------------------------------------------------------------------------------
+  const undoRoute = byPath('/api/dsh-memory/undo', 'POST');
+  r = await post(undoRoute, { scope: 'project', sessionId: 'session-1' });
+  if (r.status !== 200 || r.payload.restored < 2) throw new Error('undo should restore merged pair: ' + JSON.stringify(r.payload));
+  const restoredStore = readMemoryFile(path.join('projects', pKey.slice(2) + '.json'));
+  if (restoredStore.items.find((i) => i.content.includes('深色主题'))?.status !== 'active') throw new Error('undo did not revive the archived source item');
+  r = await post(undoRoute, { scope: 'project', sessionId: 'session-1' });
+  if (r.status !== 200 || r.payload.ok !== false || r.payload.error.code !== 'nothing-to-undo') throw new Error('second undo must report nothing-to-undo');
+  console.log('OK: consolidation undo restores the pre-op snapshot once');
+
+  // export markdown + json --------------------------------------------------------------
+  const exportRoute = byPath('/api/dsh-memory/export');
+  {
+    const box = { code: 0, raw: '', headers: {} };
+    await exportRoute.handler({ url: '/?format=markdown&scope=global' }, { writeHead(s, h) { box.code = s; box.headers = h; }, end(b) { box.raw = b ?? ''; } });
+    if (box.code !== 200 || !box.raw.includes('# dsh-memory 导出') || !box.raw.includes('用户偏好中文回复')) throw new Error('markdown export wrong');
+    if (!String(box.headers?.['content-disposition'] ?? '').includes('.md')) throw new Error('markdown export disposition wrong');
+  }
+  {
+    const box = { code: 0, raw: '' };
+    await exportRoute.handler({ url: '/?format=json&scope=global' }, { writeHead() {}, end(b) { box.raw = b ?? ''; } });
+    const parsedExport = JSON.parse(box.raw);
+    if (!Array.isArray(parsedExport.items) || parsedExport.items.length < 1) throw new Error('json export wrong');
+  }
+  console.log('OK: export serves markdown and json attachments');
+
+  // import merge ---------------------------------------------------------------------------
+  const importRoute = byPath('/api/dsh-memory/import', 'POST');
+  r = await post(importRoute, { scope: 'global', mode: 'merge', items: [{ id: 'mem_imported1', content: '从备份导入的一条独特记忆', type: 'fact', tags: [] }] });
+  if (r.status !== 200 || r.payload.imported !== 1) throw new Error('import merge failed: ' + JSON.stringify(r.payload));
+  r = await post(importRoute, { scope: 'global', mode: 'merge', items: [{ id: 'mem_imported1', content: '从备份导入的一条独特记忆', type: 'fact', tags: [] }] });
+  if (r.payload.imported !== 0) throw new Error('import merge must skip id collisions');
+  const importedCount = readMemoryFile('global.json').items.filter((i) => i.id === 'mem_imported1').length;
+  if (importedCount !== 1) throw new Error('imported item missing from store');
+  console.log('OK: import merges without duplicating ids or near-dupes');
+
+  // distill route -----------------------------------------------------------------------------
+  const distillRoute = byPath('/api/dsh-memory/distill', 'POST');
+  replyIndex = 0;
+  scopedCtx.llm = {
+    stream: async function* () {
+      yield { type: 'text-delta', index: 0, text: '[{"content":"这条消息的关键结论已被记住","type":"fact","tags":[],"action":"add","targetId":null}]' };
+      yield { type: 'finish', reason: { kind: 'stop' } };
+    },
+  };
+
+  r = await post(distillRoute, { sessionId: 'session-d', messageId: 'msg-77' });
+  if (r.status !== 200 || r.payload.added !== 1) throw new Error('distill failed: ' + JSON.stringify(r.payload));
+  r = await post(distillRoute, { sessionId: 'session-d', messageId: 'msg-missing' });
+  if (r.status !== 404 || r.payload.error.code !== 'message-not-found') throw new Error('distill unknown message must 404');
+  console.log('OK: distill remembers one message and 404s unknown ids');
+
+  // /remember command handler --------------------------------------------------------------------
+  const rememberCmd = registeredCommands[0];
+  const rememberResult = await rememberCmd.handler({
+    rawInput: ' 用户偏好用深色主题写代码 ',
+    agent: { session: { id: 'session-r', header: { cwd: 'D:/Other/Workspace' } } },
+  });
+  if (rememberResult.kind !== 'success' || !rememberResult.text.includes('深色主题')) throw new Error('/remember handler failed: ' + JSON.stringify(rememberResult));
+  const otherKey = T.projectKeyFor('D:/Other/Workspace');
+  const otherStore = readMemoryFile(path.join('projects', otherKey.slice(2) + '.json'));
+  if (!otherStore.items.some((i) => i.content === '用户偏好用深色主题写代码' && i.origin === 'manual')) throw new Error('/remember stored into the wrong scope or shape');
+  const emptyResult = await rememberCmd.handler({ rawInput: '   ', agent: undefined });
+  if (emptyResult.kind !== 'error') throw new Error('/remember without input must error');
+  console.log('OK: /remember stores manual memories in the session scope');
 }
 
 // --- 3. client bundle tests ---
@@ -388,7 +553,8 @@ async function clientTests() {
     },
     slots: {
       inject(key, factory) {
-        if (key !== 'conversation.view') throw new Error('wrong injected seat: ' + key);
+        const allowed = ['conversation.view', 'conversation.chat.assistant-actions', 'shell.overlay'];
+        if (!allowed.includes(key)) throw new Error('wrong injected seat: ' + key);
         const registerCall = factory();
         registerCall();
         return () => {};
@@ -406,7 +572,11 @@ async function clientTests() {
   if (views[0].opts.id !== 'memory') throw new Error('view id wrong: ' + views[0].opts.id);
   if (views[0].opts.order !== 11) throw new Error('view order should sit right after trajectory (10)');
   if (views[0].opts.label() !== 'T:view.memory') throw new Error('view label not wired through locale bind');
-  console.log('OK: client registers the memory view tab beside trajectory');
+  const rememberEntries = entries.filter((e) => e.opts.name === 'conversation.chat.assistant-actions');
+  if (rememberEntries.length !== 1 || rememberEntries[0].opts.id !== 'dsh-memory-remember') throw new Error('assistant-actions remember entry missing');
+  const toastEntries = entries.filter((e) => e.opts.name === 'shell.overlay' && e.opts.id === 'dsh-memory-toast');
+  if (toastEntries.length !== 1) throw new Error('global toast overlay entry missing');
+  console.log('OK: client registers memory tab + remember action + toast overlay');
 
   // SSR: the tab shell renders with an empty store
   const renderer = require(path.join(harnessModules, 'react-dom/server'));
@@ -450,9 +620,10 @@ async function main() {
 
 main().then(() => {
   try { fs.rmSync(process.env.DSH_HOME, { recursive: true, force: true }); } catch {}
+  process.exit(process.exitCode ?? 0);
 }).catch((error) => {
   console.error(error);
   try { fs.rmSync(process.env.DSH_HOME, { recursive: true, force: true }); } catch {}
-  process.exitCode = 1;
+  process.exit(1);
 });
 

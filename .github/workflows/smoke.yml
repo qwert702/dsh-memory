@@ -1,0 +1,25 @@
+name: smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install harness + react for the smoke test
+        run: |
+          mkdir -p .ci
+          cd .ci
+          npm init -y >/dev/null
+          npm i @deepseek-ai/dsh react react-dom --no-audit --no-fund
+      - name: Run smoke suite
+        run: node test/smoke.cjs
+        env:
+          DSH_HARNESS_NODE_MODULES: ${{ github.workspace }}/.ci/node_modules

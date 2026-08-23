@@ -498,6 +498,33 @@ async function hostTests() {
   if (!humanAssembly2.contexts.some((entry) => entry.name === 'dsh-memory')) throw new Error('human session should still receive briefings');
   console.log('OK: briefing injection isolated from machine-driven sessions');
 
+  // commander guide auto-planting (idempotent per scope) -------------------------------
+  {
+    const guideCwd = 'D:/Guide/CommanderProj';
+    const gkey = T.projectKeyFor(guideCwd);
+    const drive = () => sessionEventListener(
+      { id: 'cmdr-guide', header: { cwd: guideCwd }, deriveEventMessage: () => null },
+      { type: 'user/message', data: { message: { role: 'user', content: '【指挥官派发】任务', source: { kind: 'plugin', plugin: 'dsh-commander' } } } },
+    );
+    drive();
+    let planted = false;
+    for (let i = 0; i < 20 && !planted; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const file = path.join(memoryDir, 'projects', gkey.slice(2) + '.json');
+      if (!fs.existsSync(file)) continue;
+      const storeFile = JSON.parse(fs.readFileSync(file, 'utf8'));
+      planted = storeFile.items.some((item) => Array.isArray(item.tags) && item.tags.includes('dsh-commander-guide'));
+    }
+    if (!planted) throw new Error('commander guide was not planted on first commander activity');
+    drive();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const storeAfter = JSON.parse(fs.readFileSync(path.join(memoryDir, 'projects', gkey.slice(2) + '.json'), 'utf8'));
+    const guides = storeAfter.items.filter((item) => Array.isArray(item.tags) && item.tags.includes('dsh-commander-guide'));
+    if (guides.length !== 1) throw new Error('guide must be unique per scope, got ' + guides.length);
+    if (!guides[0].content.includes('<dsh-dispatch>') || !guides[0].content.includes('回执')) throw new Error('guide content incomplete');
+  }
+  console.log('OK: commander usage guide auto-planted once per scope');
+
   // auto-archive heuristic (no model route needed when only synthetic ops exist) -----
   const archiveConfigRuntime = T.createRuntime(extractionCtx, () => ({
     enabled: true, injectEnabled: true, autoExtract: true,

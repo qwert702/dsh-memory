@@ -191,6 +191,7 @@ async function main() {
   if (memCtx === undefined) fail('phase3 human session lost its briefing');
   if (!memCtx.text.includes('指挥官模式使用规范')) fail('phase3 briefing should carry the planted guide');
   if (!memCtx.text.includes('pnpm')) fail('phase3 briefing should carry phase-1 memory');
+  if (!memCtx.text.includes('【项目】〔对话提取资料〕本项目包管理器是 pnpm')) fail('phase3 extracted memory line must carry the origin prefix end-to-end');
   console.log('  OK worker: silent; human: briefing with guide + project memories');
 
   // ---------- PHASE 4: consolidation + undo ----------

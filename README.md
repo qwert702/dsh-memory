@@ -28,11 +28,18 @@ dsh-memory:
   autoExtract: true
   extractProvider: ''   # pair with extractModel to pin a small model
   extractModel: ''
+  manageProvider: ''    # consolidation model provider (empty = fall back to extract*)
+  manageModel: ''
   consolidateEveryTurns: 20
   topK: 8
   maxInjectChars: 1500
   maxInputChars: 12000
   maxTokens: 1024
+  autoArchiveDays: 90       # heuristic auto-archive age in days (0 = off)
+  memoryLocale: ''          # force memory language: '' = follow the conversation, or zh/en
+  embeddingsEnabled: true   # local semantic embeddings (needs the optional dependency)
+  embeddingRemoteHost: ''   # HuggingFace mirror, e.g. https://hf-mirror.com
+  autoLinkThreshold: 0.78   # cosine threshold for auto-linking during consolidation (0 = off)
 ```
 
 ## Layout
@@ -40,7 +47,9 @@ dsh-memory:
 - `lib/index.js` — host half: settings, injection/extraction listeners, consolidation pipeline, routes.
 - `lib/store.js` — two-scope JSON store + durable cursors/counters.
 - `lib/util.js` — pure helpers (scope keys, similarity, parsers, transcript builder).
+- `lib/embeddings.js` — optional local embeddings (transformers.js WASM): vector sidecar + serial inference queue.
 - `lib/client.js` — browser half (hand-written bundle): additive `conversation.view` entry.
 - `test/smoke.cjs` — `node test/smoke.cjs`.
+- `test/e2e-flow.cjs` — six-stage end-to-end business flow (`node test/e2e-flow.cjs`).
 
 MIT

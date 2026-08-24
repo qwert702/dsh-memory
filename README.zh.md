@@ -24,7 +24,7 @@ DeepSeek Harness 网页端**长期记忆插件**：项目记忆 + 全局记忆�
   - **列表视图** —— 一条一张卡片：类型色点、内容、标签、来源时间、强化次数、链接数；行内编辑（内容/类型/标签）、📌置顶、归档/恢复、删除；两步点击建链接（可选 related/supersedes/contradicts 关系）；搜索过滤；显示已归档开关；**撤销整理 / 导出 MD·JSON / 导入备份**。
   - **图谱视图** —— canvas 力导向图：节点=记忆（颜色=类型、半径=链接度）、边=关联；滚轮缩放、拖拽平移/拖节点、点选高亮邻域并显示详情卡；静止后渲染循环自动休眠。
 - **自动注入** —— 监听 `system-prompt/assemble` 瀑布，把 Top-K 记忆作为动态上下文追加进每个请求；置顶记忆保底携带；无 cwd 的组装只带全局；任何异常都原样放行 assembly，绝不影响请求。
-- **自动提取（v2 协议）** —— 监听 `turn/end` 排队提取；提示词携带既有相关记忆，模型对每条候选标注 `add/update/supersede/contradict` 动作：更新合并到原条目、取代时旧条目归档并建 supersedes 链、冲突时双向 contradicts 链共存；字面近似去重兜底；**子代理会话不参与提取**；连续失败 3 次暂停并弹全局通知；记忆语言跟随对话主语言（可强制 zh/en）。
+- **自动提取（v2 协议）** —— 监听 `turn/end` 排队提取；提示词携带既有相关记忆，模型对每条候选标注 `add/update/supersede/contradict` 动作：更新合并到原条目、取代时旧条目归档并建 supersedes 链、冲突时双向 contradicts 链共存；字面近似去重兜底；**子代理会话不参与提取**；连续失败 3 次自动暂停——暂停提示依赖「记忆」Tab 处于打开状态（Tab 每 25 秒轮询状态，转为暂停的瞬间弹出一次全局通知）；记忆语言跟随对话主语言（可强制 zh/en）。
 - **定期整理** —— 每作用域累计 N 轮自动触发或手动触发：模型提 merge/link/archive/retag 操作流，host 校验后事务应用；**过期记忆按 autoArchiveDays 启发式自动归档**（不依赖模型）；每次模型整理前自动快照，Tab 内一键「↩ 撤销整理」。
 - **多种记录入口**：
   - 斜杠命令 `/remember <一句话>`（存入当前项目/全局库）；
@@ -76,20 +76,21 @@ turn/end ──▶ 提取队列 ──▶ 回放新增事件 ──▶ 小模型
                                               │
                                      累计 N 轮 ─┴──▶ 整理队列 ──▶ 小模型出 ops ──▶ 校验+应用
 任何请求 ──▶ system-prompt/assemble 瀑布 ──▶ 选 Top-K ──▶ 追加 <memory-briefing> 上下文
-浏览器「记忆」Tab ──▶ /api/dsh-memory/*（items/update/remove/link/unlink/graph/consolidate/extract/status）
+浏览器「记忆」Tab ──▶ /api/dsh-memory/*（items/add/update/remove/link/unlink/graph/consolidate/extract/undo/export/import/distill/embed/status，共 15 条）
 ```
 
 ## 仓库布局
 
-- `lib/index.js` — host 半区：设置 + 监听器（注入/提取）+ 整理管线 + 9 条路由。
+- `lib/index.js` — host 半区：设置 + 监听器（注入/提取）+ 整理管线 + 15 条路由。
 - `lib/store.js` — 双作用域 JSON 库（缓存 + 每文件串行锁 + 原子写）与持久化游标/计数。
 - `lib/util.js` — 纯函数：作用域键、相似度、简报挑选、模型输出解析、回放构建。
+- `lib/embeddings.js` — 可选本地嵌入（transformers.js WASM）：向量 sidecar 读写与串行推理队列。
 - `lib/client.js` — 浏览器半区（手写 bundle）：`conversation.view` 增量条目（列表 + 图谱）。
 - `test/smoke.cjs` — `node test/smoke.cjs`：纯函数断言、路由注册、注入监听器、提取/整管线（临时 DSH_HOME 隔离）、client 注册与 SSR。
 
 ## 已知限制
 
-- 注入排序基于重要性而非当前问题关键词（assembly 阶段拿不到消息文本）；靠 topK + 字符帽控制体量。
+- 相关性召回以 recent 缓冲中最近人类输入（约末尾 2000 字符）近似当前话题，长上下文的回指与远距离主题召回有限；靠 topK + 字符帽控制体量。
 - 自动整理需要可用的模型路由；未配置且会话未路由过时会失败并提示。
 - 图谱布局为简单力导向（无社区着色等高级特性），数百节点内流畅。
 - Windows 下项目键对路径做了大小写折叠，跨平台共享同一目录视为同一项目。

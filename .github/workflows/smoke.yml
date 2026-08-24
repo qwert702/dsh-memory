@@ -23,3 +23,7 @@ jobs:
         run: node test/smoke.cjs
         env:
           DSH_HARNESS_NODE_MODULES: ${{ github.workspace }}/.ci/node_modules
+      - name: Run end-to-end business-flow verification
+        run: node test/e2e-flow.cjs
+        env:
+          DSH_HARNESS_NODE_MODULES: ${{ github.workspace }}/.ci/node_modules

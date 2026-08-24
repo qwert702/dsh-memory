@@ -27,7 +27,7 @@
                            }
             },
     "scripts":  {
-                    "test":  "node test/smoke.cjs"
+                    "test":  "node test/smoke.cjs && node test/e2e-flow.cjs"
                 },
     "license":  "MIT"
 }
